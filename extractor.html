@@ -127,12 +127,13 @@
         <h1>🎮 AssetBundle Extractor v2.1</h1>
         <p class="subtitle">Support UnityFS, LZ4, et Scanner PNG/JPG</p>
         
-        <div class="upload-area" id="uploadArea">
-            <div class="upload-icon">📦</div>
-            <p><strong>Clique ou glisse tes fichiers .bundle / .bin</strong></p>
-            <p style="font-size: 12px; color: #666; margin-top: 10px;">Analyse binaire brute</p>
-            <input type="file" id="fileInput" multiple>
-        </div>
+       <label class="upload-area" id="uploadArea" for="fileInput">
+    <div class="upload-icon">📦</div>
+    <p><strong>Clique ici ou glisse tes fichiers .bundle / .bin</strong></p>
+    <p style="font-size: 12px; color: #666; margin-top: 10px;">Analyse binaire brute</p>
+    <input type="file" id="fileInput" multiple>
+</label>
+
         
         <div class="progress" id="progress">
             <div class="progress-bar">
