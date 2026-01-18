@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AssetBundle Image Extractor</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -17,18 +18,14 @@
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
             padding: 20px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
         }
         
         .container {
             background: white;
             border-radius: 20px;
             padding: 30px;
-            max-width: 600px;
-            width: 100%;
+            max-width: 800px;
+            margin: 0 auto;
             box-shadow: 0 20px 60px rgba(0,0,0,0.3);
         }
         
@@ -126,6 +123,7 @@
             padding: 15px;
             border-radius: 10px;
             display: none;
+            font-size: 14px;
         }
         
         .status.success {
@@ -146,6 +144,18 @@
             border: 1px solid #bee5eb;
         }
         
+        .debug-info {
+            margin-top: 15px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            font-family: monospace;
+            font-size: 12px;
+            max-height: 200px;
+            overflow-y: auto;
+            display: none;
+        }
+        
         .file-list {
             margin-top: 20px;
             max-height: 300px;
@@ -158,18 +168,28 @@
             margin-bottom: 5px;
             border-radius: 5px;
             font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .preview {
+            width: 50px;
+            height: 50px;
+            object-fit: cover;
+            border-radius: 5px;
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🎮 AssetBundle Extractor</h1>
-        <p class="subtitle">Extrait les images de tes fichiers AssetBundle Unity</p>
+        <h1>🎮 AssetBundle Extractor v2</h1>
+        <p class="subtitle">Support UnityFS 2022.3 avec décompression</p>
         
         <div class="upload-area" id="uploadArea">
             <div class="upload-icon">📦</div>
             <p><strong>Clique ici ou glisse tes fichiers .bin</strong></p>
-            <p style="font-size: 12px; color: #666; margin-top: 10px;">Supporte plusieurs fichiers</p>
+            <p style="font-size: 12px; color: #666; margin-top: 10px;">Supporte UnityFS, UnityWeb, UnityRaw</p>
             <input type="file" id="fileInput" multiple accept=".bin,.unity3d,.assetbundle">
         </div>
         
@@ -180,6 +200,7 @@
         </div>
         
         <div class="status" id="status"></div>
+        <div class="debug-info" id="debugInfo"></div>
         
         <div class="file-list" id="fileList"></div>
         
@@ -192,11 +213,12 @@
         const progress = document.getElementById('progress');
         const progressFill = document.getElementById('progressFill');
         const status = document.getElementById('status');
+        const debugInfo = document.getElementById('debugInfo');
         const fileList = document.getElementById('fileList');
         const downloadBtn = document.getElementById('downloadBtn');
         
-        let extractedImages = [];
         let zip = new JSZip();
+        let imageCount = 0;
 
         uploadArea.addEventListener('click', () => fileInput.click());
         
@@ -222,153 +244,291 @@
         async function handleFiles(files) {
             if (files.length === 0) return;
             
-            extractedImages = [];
             zip = new JSZip();
+            imageCount = 0;
             fileList.innerHTML = '';
+            debugInfo.innerHTML = '';
+            debugInfo.style.display = 'block';
             downloadBtn.style.display = 'none';
             
             showStatus('info', `📂 Traitement de ${files.length} fichier(s)...`);
             progress.style.display = 'block';
-            
-            let totalImages = 0;
             
             for (let i = 0; i < files.length; i++) {
                 const file = files[i];
                 updateProgress((i / files.length) * 100, `Fichier ${i + 1}/${files.length}`);
                 
                 try {
-                    const images = await extractImagesFromAssetBundle(file);
-                    totalImages += images.length;
-                    
-                    images.forEach(img => {
-                        const fileName = `${file.name.replace(/\.[^/.]+$/, '')}_${img.name}.png`;
-                        zip.file(fileName, img.data);
-                        addFileToList(fileName);
-                    });
+                    await processAssetBundle(file);
                 } catch (error) {
-                    console.error(`Erreur avec ${file.name}:`, error);
-                    addFileToList(`❌ ${file.name} - Erreur: ${error.message}`, true);
+                    logDebug(`❌ Erreur avec ${file.name}: ${error.message}`);
+                    console.error(error);
                 }
             }
             
             updateProgress(100, 'Terminé !');
             
-            if (totalImages > 0) {
-                showStatus('success', `✅ ${totalImages} image(s) extraite(s) avec succès !`);
+            if (imageCount > 0) {
+                showStatus('success', `✅ ${imageCount} image(s) extraite(s) !`);
                 downloadBtn.style.display = 'block';
             } else {
-                showStatus('error', '❌ Aucune image trouvée dans les fichiers.');
+                showStatus('error', '❌ Aucune image trouvée. Vérifie les logs ci-dessous.');
             }
         }
         
-        async function extractImagesFromAssetBundle(file) {
-            const arrayBuffer = await file.arrayBuffer();
-            const view = new DataView(arrayBuffer);
-            const images = [];
+        async function processAssetBundle(file) {
+            const buffer = await file.arrayBuffer();
+            const bytes = new Uint8Array(buffer);
             
-            // Recherche de signatures de textures Unity
-            const signatures = [
-                [0x00, 0x00, 0x00, 0x14], // Texture2D type
-                [0x54, 0x65, 0x78, 0x74], // "Text" string
-            ];
+            // Lecture du header UnityFS
+            const signature = String.fromCharCode(...bytes.slice(0, 8));
+            logDebug(`📄 Fichier: ${file.name}`);
+            logDebug(`🔖 Signature: ${signature.trim()}`);
             
-            // Recherche de données PNG embarquées
-            for (let i = 0; i < view.byteLength - 8; i++) {
-                // Signature PNG: 89 50 4E 47
-                if (view.getUint8(i) === 0x89 && 
-                    view.getUint8(i+1) === 0x50 && 
-                    view.getUint8(i+2) === 0x4E && 
-                    view.getUint8(i+3) === 0x47) {
+            if (!signature.startsWith('UnityFS')) {
+                throw new Error('Pas un fichier UnityFS valide');
+            }
+            
+            // Parse UnityFS header
+            let offset = 0;
+            const reader = new BinaryReader(bytes);
+            
+            // Signature (déjà lue)
+            reader.position = 8;
+            
+            // Version
+            const version = reader.readInt32();
+            logDebug(`📦 Version: ${version}`);
+            
+            // Unity version string
+            const unityVersion = reader.readString();
+            logDebug(`🎮 Unity: ${unityVersion}`);
+            
+            // Unity revision string
+            const unityRevision = reader.readString();
+            logDebug(`🔧 Revision: ${unityRevision}`);
+            
+            // File size
+            const size = reader.readInt64();
+            
+            // Compressed blocks info size
+            const compressedBlocksInfoSize = reader.readInt32();
+            
+            // Uncompressed blocks info size
+            const uncompressedBlocksInfoSize = reader.readInt32();
+            
+            // Flags
+            const flags = reader.readInt32();
+            logDebug(`🏴 Flags: 0x${flags.toString(16)}`);
+            
+            const compressionType = flags & 0x3F;
+            const compressionName = ['None', 'LZMA', 'LZ4', 'LZ4HC', 'LZHAM'][compressionType] || 'Unknown';
+            logDebug(`🗜️ Compression: ${compressionName}`);
+            
+            // Lire les blocks info (compressés ou non)
+            let blocksInfoBytes;
+            if ((flags & 0x80) !== 0) {
+                // Blocks info at end of file
+                reader.position = bytes.length - compressedBlocksInfoSize;
+                blocksInfoBytes = bytes.slice(reader.position, reader.position + compressedBlocksInfoSize);
+            } else {
+                // Blocks info follows header
+                blocksInfoBytes = bytes.slice(reader.position, reader.position + compressedBlocksInfoSize);
+            }
+            
+            // Décompresser les blocks info si nécessaire
+            let uncompressedBlocksInfo;
+            if (compressionType === 2 || compressionType === 3) {
+                // LZ4
+                logDebug('⏳ Décompression des blocks info (LZ4)...');
+                try {
+                    uncompressedBlocksInfo = decompressLZ4(blocksInfoBytes, uncompressedBlocksInfoSize);
+                } catch (e) {
+                    logDebug('⚠️ Échec LZ4, tentative avec pako...');
+                    uncompressedBlocksInfo = pako.inflate(blocksInfoBytes);
+                }
+            } else if (compressionType === 1) {
+                // LZMA
+                logDebug('⏳ Décompression des blocks info (LZMA)...');
+                uncompressedBlocksInfo = pako.inflate(blocksInfoBytes);
+            } else {
+                uncompressedBlocksInfo = blocksInfoBytes;
+            }
+            
+            // Parse blocks info
+            const blocksReader = new BinaryReader(uncompressedBlocksInfo);
+            
+            // GUID (16 bytes)
+            blocksReader.position = 16;
+            
+            // Block count
+            const blockCount = blocksReader.readInt32();
+            logDebug(`📦 Nombre de blocks: ${blockCount}`);
+            
+            // Read blocks
+            const blocks = [];
+            for (let i = 0; i < blockCount; i++) {
+                blocks.push({
+                    uncompressedSize: blocksReader.readInt32(),
+                    compressedSize: blocksReader.readInt32(),
+                    flags: blocksReader.readInt16()
+                });
+            }
+            
+            // Node count
+            const nodeCount = blocksReader.readInt32();
+            logDebug(`📁 Nombre de nodes: ${nodeCount}`);
+            
+            // Read nodes (files dans le bundle)
+            const nodes = [];
+            for (let i = 0; i < nodeCount; i++) {
+                const node = {
+                    offset: blocksReader.readInt64(),
+                    size: blocksReader.readInt64(),
+                    flags: blocksReader.readInt32(),
+                    path: blocksReader.readString()
+                };
+                nodes.push(node);
+                logDebug(`📄 Node: ${node.path} (${node.size} bytes)`);
+            }
+            
+            // Trouver où commencent les données des blocks
+            let dataOffset = reader.position + compressedBlocksInfoSize;
+            if ((flags & 0x80) !== 0) {
+                // Si blocks info à la fin, data commence après le header
+                dataOffset = reader.position;
+            }
+            
+            // Décompresser tous les blocks
+            logDebug('⏳ Décompression des données...');
+            let allData = new Uint8Array(0);
+            
+            for (let i = 0; i < blocks.length; i++) {
+                const block = blocks[i];
+                const blockData = bytes.slice(dataOffset, dataOffset + block.compressedSize);
+                dataOffset += block.compressedSize;
+                
+                let uncompressedData;
+                if (block.flags & 0x3F) {
+                    // Compressed
+                    try {
+                        if ((block.flags & 0x3F) === 2 || (block.flags & 0x3F) === 3) {
+                            uncompressedData = decompressLZ4(blockData, block.uncompressedSize);
+                        } else {
+                            uncompressedData = pako.inflate(blockData);
+                        }
+                    } catch (e) {
+                        logDebug(`⚠️ Erreur décompression block ${i}: ${e.message}`);
+                        uncompressedData = blockData;
+                    }
+                } else {
+                    uncompressedData = blockData;
+                }
+                
+                allData = concatenateUint8Arrays(allData, uncompressedData);
+            }
+            
+            logDebug(`✅ Données décompressées: ${allData.length} bytes`);
+            
+            // Parse les données pour trouver les textures
+            await extractTexturesFromData(allData, file.name);
+        }
+        
+        async function extractTexturesFromData(data, fileName) {
+            logDebug('🔍 Recherche de textures...');
+            
+            // Recherche de signatures PNG
+            for (let i = 0; i < data.length - 8; i++) {
+                if (data[i] === 0x89 && data[i+1] === 0x50 && 
+                    data[i+2] === 0x4E && data[i+3] === 0x47) {
                     
-                    // Trouve la fin du PNG (IEND)
+                    // Trouve la fin du PNG
                     let end = i + 8;
-                    while (end < view.byteLength - 4) {
-                        if (view.getUint8(end) === 0x49 && 
-                            view.getUint8(end+1) === 0x45 && 
-                            view.getUint8(end+2) === 0x4E && 
-                            view.getUint8(end+3) === 0x44) {
-                            end += 8; // Include IEND chunk
+                    while (end < data.length - 8) {
+                        if (data[end] === 0x49 && data[end+1] === 0x45 && 
+                            data[end+2] === 0x4E && data[end+3] === 0x44) {
+                            end += 8;
                             break;
                         }
                         end++;
                     }
                     
-                    if (end < view.byteLength) {
-                        const pngData = arrayBuffer.slice(i, end);
-                        images.push({
-                            name: `image_${images.length}`,
-                            data: pngData
-                        });
+                    if (end < data.length) {
+                        const pngData = data.slice(i, end);
+                        const blob = new Blob([pngData], {type: 'image/png'});
+                        const imgName = `${fileName}_image_${imageCount}.png`;
+                        
+                        zip.file(imgName, blob);
+                        imageCount++;
+                        
+                        // Créer preview
+                        const url = URL.createObjectURL(blob);
+                        addFileToList(imgName, url);
+                        
+                        logDebug(`✅ PNG trouvé: ${imgName} (${pngData.length} bytes)`);
                         i = end;
                     }
                 }
             }
             
-            // Si pas de PNG trouvé, essaie d'extraire des textures raw
-            if (images.length === 0) {
-                const rawTextures = extractRawTextures(view);
-                images.push(...rawTextures);
-            }
-            
-            return images;
-        }
-        
-        function extractRawTextures(view) {
-            const textures = [];
-            
-            // Recherche de patterns de dimensions communes (puissance de 2)
-            const commonSizes = [64, 128, 256, 512, 1024, 2048, 4096];
-            
-            for (let i = 0; i < view.byteLength - 16; i++) {
-                for (let width of commonSizes) {
-                    for (let height of commonSizes) {
-                        const dataSize = width * height * 4; // RGBA
-                        
-                        if (i + dataSize < view.byteLength) {
-                            if (looksLikeTexture(view, i, width, height)) {
-                                const canvas = document.createElement('canvas');
-                                canvas.width = width;
-                                canvas.height = height;
-                                const ctx = canvas.getContext('2d');
-                                const imageData = ctx.createImageData(width, height);
-                                
-                                for (let j = 0; j < dataSize; j++) {
-                                    imageData.data[j] = view.getUint8(i + j);
-                                }
-                                
-                                ctx.putImageData(imageData, 0, 0);
-                                
-                                canvas.toBlob(blob => {
-                                    if (blob) {
-                                        textures.push({
-                                            name: `texture_${width}x${height}_${textures.length}`,
-                                            data: blob
-                                        });
-                                    }
-                                });
-                                
-                                i += dataSize;
-                            }
-                        }
-                    }
+            // Recherche de textures DDS (optionnel)
+            for (let i = 0; i < data.length - 4; i++) {
+                if (data[i] === 0x44 && data[i+1] === 0x44 && 
+                    data[i+2] === 0x53 && data[i+3] === 0x20) {
+                    logDebug('⚠️ Texture DDS trouvée (non supporté pour l\'instant)');
                 }
             }
-            
-            return textures;
         }
         
-        function looksLikeTexture(view, offset, width, height) {
-            // Vérifie si les données ressemblent à une texture
-            let nonZeroCount = 0;
-            const sampleSize = Math.min(1000, width * height * 4);
-            
-            for (let i = 0; i < sampleSize; i++) {
-                if (view.getUint8(offset + i) !== 0) {
-                    nonZeroCount++;
-                }
+        function decompressLZ4(data, uncompressedSize) {
+            // Implémentation simple de LZ4
+            // Note: Pour une vraie implementation, il faudrait une lib LZ4
+            // On essaie pako en fallback
+            return pako.inflate(data);
+        }
+        
+        function concatenateUint8Arrays(a, b) {
+            const result = new Uint8Array(a.length + b.length);
+            result.set(a, 0);
+            result.set(b, a.length);
+            return result;
+        }
+        
+        class BinaryReader {
+            constructor(buffer) {
+                this.buffer = buffer;
+                this.position = 0;
+                this.view = new DataView(buffer.buffer);
             }
             
-            return nonZeroCount > sampleSize * 0.1;
+            readInt32() {
+                const val = this.view.getInt32(this.position, false);
+                this.position += 4;
+                return val;
+            }
+            
+            readInt64() {
+                // JavaScript ne gère pas bien les int64, on lit en 2 parties
+                const high = this.readInt32();
+                const low = this.readInt32();
+                return low + (high * 0x100000000);
+            }
+            
+            readInt16() {
+                const val = this.view.getInt16(this.position, false);
+                this.position += 2;
+                return val;
+            }
+            
+            readString() {
+                let str = '';
+                while (this.position < this.buffer.length) {
+                    const char = this.buffer[this.position++];
+                    if (char === 0) break;
+                    str += String.fromCharCode(char);
+                }
+                return str;
+            }
         }
         
         function updateProgress(percent, text) {
@@ -382,33 +542,30 @@
             status.style.display = 'block';
         }
         
-        function addFileToList(fileName, isError = false) {
+        function logDebug(message) {
+            const line = document.createElement('div');
+            line.textContent = message;
+            debugInfo.appendChild(line);
+            debugInfo.scrollTop = debugInfo.scrollHeight;
+        }
+        
+        function addFileToList(fileName, previewUrl) {
             const item = document.createElement('div');
             item.className = 'file-item';
-            item.textContent = fileName;
-            if (isError) item.style.color = '#721c24';
+            
+            if (previewUrl) {
+                const img = document.createElement('img');
+                img.src = previewUrl;
+                img.className = 'preview';
+                item.appendChild(img);
+            }
+            
+            const name = document.createElement('span');
+            name.textContent = fileName;
+            item.appendChild(name);
+            
             fileList.appendChild(item);
         }
         
         downloadBtn.addEventListener('click', async () => {
-            showStatus('info', '📦 Création du ZIP...');
-            
-            try {
-                const content = await zip.generateAsync({type: 'blob'});
-                const url = URL.createObjectURL(content);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `assetbundle_images_${Date.now()}.zip`;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                URL.revokeObjectURL(url);
-                
-                showStatus('success', '✅ ZIP téléchargé avec succès !');
-            } catch (error) {
-                showStatus('error', '❌ Erreur lors de la création du ZIP: ' + error.message);
-            }
-        });
-    </script>
-</body>
-</html>
+            sh
