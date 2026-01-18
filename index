@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AssetBundle Image Extractor</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 20px;
+            padding: 30px;
+            max-width: 600px;
+            width: 100%;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 24px;
+        }
+        
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        
+        .upload-area {
+            border: 3px dashed #667eea;
+            border-radius: 15px;
+            padding: 40px 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            background: #f8f9ff;
+        }
+        
+        .upload-area:hover {
+            border-color: #764ba2;
+            background: #f0f2ff;
+        }
+        
+        .upload-area.dragover {
+            border-color: #764ba2;
+            background: #e8ebff;
+            transform: scale(1.02);
+        }
+        
+        .upload-icon {
+            font-size: 48px;
+            margin-bottom: 15px;
+        }
+        
+        input[type="file"] {
+            display: none;
+        }
+        
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 25px;
+            font-size: 16px;
+            cursor: pointer;
+            margin-top: 15px;
+            transition: transform 0.2s;
+        }
+        
+        .btn:hover {
+            transform: translateY(-2px);
+        }
+        
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        .progress {
+            margin-top: 20px;
+            display: none;
+        }
+        
+        .progress-bar {
+            width: 100%;
+            height: 30px;
+            background: #e0e0e0;
+            border-radius: 15px;
+            overflow: hidden;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            width: 0%;
+            transition: width 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        
+        .status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 10px;
+            display: none;
+        }
+        
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        
+        .status.info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+        
+        .file-list {
+            margin-top: 20px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        
+        .file-item {
+            padding: 10px;
+            background: #f8f9fa;
+            margin-bottom: 5px;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎮 AssetBundle Extractor</h1>
+        <p class="subtitle">Extrait les images de tes fichiers AssetBundle Unity</p>
+        
+        <div class="upload-area" id="uploadArea">
+            <div class="upload-icon">📦</div>
+            <p><strong>Clique ici ou glisse tes fichiers .bin</strong></p>
+            <p style="font-size: 12px; color: #666; margin-top: 10px;">Supporte plusieurs fichiers</p>
+            <input type="file" id="fileInput" multiple accept=".bin,.unity3d,.assetbundle">
+        </div>
+        
+        <div class="progress" id="progress">
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill">0%</div>
+            </div>
+        </div>
+        
+        <div class="status" id="status"></div>
+        
+        <div class="file-list" id="fileList"></div>
+        
+        <button class="btn" id="downloadBtn" style="display:none;">📥 Télécharger le ZIP</button>
+    </div>
+
+    <script>
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
+        const progress = document.getElementById('progress');
+        const progressFill = document.getElementById('progressFill');
+        const status = document.getElementById('status');
+        const fileList = document.getElementById('fileList');
+        const downloadBtn = document.getElementById('downloadBtn');
+        
+        let extractedImages = [];
+        let zip = new JSZip();
+
+        uploadArea.addEventListener('click', () => fileInput.click());
+        
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+        
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+        
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            handleFiles(e.dataTransfer.files);
+        });
+        
+        fileInput.addEventListener('change', (e) => {
+            handleFiles(e.target.files);
+        });
+        
+        async function handleFiles(files) {
+            if (files.length === 0) return;
+            
+            extractedImages = [];
+            zip = new JSZip();
+            fileList.innerHTML = '';
+            downloadBtn.style.display = 'none';
+            
+            showStatus('info', `📂 Traitement de ${files.length} fichier(s)...`);
+            progress.style.display = 'block';
+            
+            let totalImages = 0;
+            
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                updateProgress((i / files.length) * 100, `Fichier ${i + 1}/${files.length}`);
+                
+                try {
+                    const images = await extractImagesFromAssetBundle(file);
+                    totalImages += images.length;
+                    
+                    images.forEach(img => {
+                        const fileName = `${file.name.replace(/\.[^/.]+$/, '')}_${img.name}.png`;
+                        zip.file(fileName, img.data);
+                        addFileToList(fileName);
+                    });
+                } catch (error) {
+                    console.error(`Erreur avec ${file.name}:`, error);
+                    addFileToList(`❌ ${file.name} - Erreur: ${error.message}`, true);
+                }
+            }
+            
+            updateProgress(100, 'Terminé !');
+            
+            if (totalImages > 0) {
+                showStatus('success', `✅ ${totalImages} image(s) extraite(s) avec succès !`);
+                downloadBtn.style.display = 'block';
+            } else {
+                showStatus('error', '❌ Aucune image trouvée dans les fichiers.');
+            }
+        }
+        
+        async function extractImagesFromAssetBundle(file) {
+            const arrayBuffer = await file.arrayBuffer();
+            const view = new DataView(arrayBuffer);
+            const images = [];
+            
+            // Recherche de signatures de textures Unity
+            const signatures = [
+                [0x00, 0x00, 0x00, 0x14], // Texture2D type
+                [0x54, 0x65, 0x78, 0x74], // "Text" string
+            ];
+            
+            // Recherche de données PNG embarquées
+            for (let i = 0; i < view.byteLength - 8; i++) {
+                // Signature PNG: 89 50 4E 47
+                if (view.getUint8(i) === 0x89 && 
+                    view.getUint8(i+1) === 0x50 && 
+                    view.getUint8(i+2) === 0x4E && 
+                    view.getUint8(i+3) === 0x47) {
+                    
+                    // Trouve la fin du PNG (IEND)
+                    let end = i + 8;
+                    while (end < view.byteLength - 4) {
+                        if (view.getUint8(end) === 0x49 && 
+                            view.getUint8(end+1) === 0x45 && 
+                            view.getUint8(end+2) === 0x4E && 
+                            view.getUint8(end+3) === 0x44) {
+                            end += 8; // Include IEND chunk
+                            break;
+                        }
+                        end++;
+                    }
+                    
+                    if (end < view.byteLength) {
+                        const pngData = arrayBuffer.slice(i, end);
+                        images.push({
+                            name: `image_${images.length}`,
+                            data: pngData
+                        });
+                        i = end;
+                    }
+                }
+            }
+            
+            // Si pas de PNG trouvé, essaie d'extraire des textures raw
+            if (images.length === 0) {
+                const rawTextures = extractRawTextures(view);
+                images.push(...rawTextures);
+            }
+            
+            return images;
+        }
+        
+        function extractRawTextures(view) {
+            const textures = [];
+            
+            // Recherche de patterns de dimensions communes (puissance de 2)
+            const commonSizes = [64, 128, 256, 512, 1024, 2048, 4096];
+            
+            for (let i = 0; i < view.byteLength - 16; i++) {
+                for (let width of commonSizes) {
+                    for (let height of commonSizes) {
+                        const dataSize = width * height * 4; // RGBA
+                        
+                        if (i + dataSize < view.byteLength) {
+                            if (looksLikeTexture(view, i, width, height)) {
+                                const canvas = document.createElement('canvas');
+                                canvas.width = width;
+                                canvas.height = height;
+                                const ctx = canvas.getContext('2d');
+                                const imageData = ctx.createImageData(width, height);
+                                
+                                for (let j = 0; j < dataSize; j++) {
+                                    imageData.data[j] = view.getUint8(i + j);
+                                }
+                                
+                                ctx.putImageData(imageData, 0, 0);
+                                
+                                canvas.toBlob(blob => {
+                                    if (blob) {
+                                        textures.push({
+                                            name: `texture_${width}x${height}_${textures.length}`,
+                                            data: blob
+                                        });
+                                    }
+                                });
+                                
+                                i += dataSize;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            return textures;
+        }
+        
+        function looksLikeTexture(view, offset, width, height) {
+            // Vérifie si les données ressemblent à une texture
+            let nonZeroCount = 0;
+            const sampleSize = Math.min(1000, width * height * 4);
+            
+            for (let i = 0; i < sampleSize; i++) {
+                if (view.getUint8(offset + i) !== 0) {
+                    nonZeroCount++;
+                }
+            }
+            
+            return nonZeroCount > sampleSize * 0.1;
+        }
+        
+        function updateProgress(percent, text) {
+            progressFill.style.width = percent + '%';
+            progressFill.textContent = text || Math.round(percent) + '%';
+        }
+        
+        function showStatus(type, message) {
+            status.className = 'status ' + type;
+            status.textContent = message;
+            status.style.display = 'block';
+        }
+        
+        function addFileToList(fileName, isError = false) {
+            const item = document.createElement('div');
+            item.className = 'file-item';
+            item.textContent = fileName;
+            if (isError) item.style.color = '#721c24';
+            fileList.appendChild(item);
+        }
+        
+        downloadBtn.addEventListener('click', async () => {
+            showStatus('info', '📦 Création du ZIP...');
+            
+            try {
+                const content = await zip.generateAsync({type: 'blob'});
+                const url = URL.createObjectURL(content);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `assetbundle_images_${Date.now()}.zip`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                
+                showStatus('success', '✅ ZIP téléchargé avec succès !');
+            } catch (error) {
+                showStatus('error', '❌ Erreur lors de la création du ZIP: ' + error.message);
+            }
+        });
+    </script>
+</body>
+</html>
